@@ -13,6 +13,8 @@ import random
 import numpy as np
 import scipy.sparse as sp
 
+from collections import deque
+
 '''
 Note: This code refers to UPFD code, the link is https://github.com/safe-graph/GNN-FakeNews
 '''
@@ -56,32 +58,87 @@ def split(data, batch):
 	return data, slices
 
 
-def read_graph_data(folder, feature):
-	"""
-	PyG util code to create PyG data instance from raw graph data
-	"""
+def filter_graph_by_distance(data, max_distance):
+    from collections import deque
 
-	node_attributes = sp.load_npz(folder + f'new_{feature}_feature.npz')
-	edge_index = read_file(folder, 'A', torch.long).t()
-	node_graph_id = np.load(folder + 'node_graph_id.npy')
-	graph_labels = np.load(folder + 'graph_labels.npy')
+    edge_index = data.edge_index.numpy()
+    num_nodes = data.x.size(0)
 
-	edge_attr = None
-	x = torch.from_numpy(node_attributes.todense()).to(torch.float)
-	node_graph_id = torch.from_numpy(node_graph_id).to(torch.long)
-	y = torch.from_numpy(graph_labels).to(torch.long)
-	_, y = y.unique(sorted=True, return_inverse=True)
+    distances = [float('inf')] * num_nodes
+    news_node = 0 
+    distances[news_node] = 0
 
-	num_nodes = edge_index.max().item() + 1 if x is None else x.size(0)
-	edge_index, edge_attr = add_self_loops(edge_index, edge_attr)
-	edge_index, edge_attr = coalesce(edge_index, edge_attr, num_nodes, num_nodes)
+    queue = deque([news_node])	# BFS
+    while queue:
+        current = queue.popleft()
+        for neighbor in edge_index[1, edge_index[0] == current]:
+            if distances[neighbor] == float('inf'):  # Unvisited
+                distances[neighbor] = distances[current] + 1
+                if distances[neighbor] <= max_distance:
+                    queue.append(neighbor)
 
-	data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
-	data, slices = split(data, node_graph_id)
+    # Filter nodes and edges
+    valid_nodes = [i for i, dist in enumerate(distances) if dist <= max_distance]
+    node_mapping = {node: idx for idx, node in enumerate(valid_nodes)}
+    valid_edges = [
+        (node_mapping[u], node_mapping[v])
+        for u, v in zip(edge_index[0], edge_index[1])
+        if u in node_mapping and v in node_mapping
+    ]
+    valid_edge_index = torch.tensor(valid_edges, dtype=torch.long).t().contiguous()
 
-	print("slices = ", slices)
-	print("data = ", data)
-	return data, slices
+    # Update data object
+    data.x = data.x[valid_nodes]
+    data.edge_index = valid_edge_index
+    data.num_nodes = len(valid_nodes)  # Update node count
+
+    return data
+
+
+
+def read_graph_data(folder, feature, max_distance=2):
+    """
+    PyG util code to create PyG data instance from raw graph data
+    """
+
+    # Load data
+    node_attributes = sp.load_npz(folder + f'new_{feature}_feature.npz')
+    edge_index = read_file(folder, 'A', torch.long).t()
+    node_graph_id = np.load(folder + 'node_graph_id.npy')
+    graph_labels = np.load(folder + 'graph_labels.npy')
+
+    edge_attr = None
+    x = torch.from_numpy(node_attributes.todense()).to(torch.float)
+    node_graph_id = torch.from_numpy(node_graph_id).to(torch.long)
+    y = torch.from_numpy(graph_labels).to(torch.long)
+    _, y = y.unique(sorted=True, return_inverse=True)
+
+    # Create PyG data object
+    num_nodes = edge_index.max().item() + 1 if x is None else x.size(0)
+    edge_index, edge_attr = add_self_loops(edge_index, edge_attr)
+    edge_index, edge_attr = coalesce(edge_index, edge_attr, num_nodes, num_nodes)
+
+    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
+
+    # Filter each graph to a max distance
+    data_list = []
+    for graph_id in torch.unique(node_graph_id):
+        # Extract subgraph for each graph ID
+        mask = node_graph_id == graph_id
+        subgraph = Data(
+            x=data.x[mask],
+            edge_index=data.edge_index[:, mask[node_graph_id[data.edge_index[0]]]],
+            y=data.y[graph_id],
+        )
+        # Filter graph
+        filtered_graph = filter_graph_by_distance(subgraph, max_distance)
+        data_list.append(filtered_graph)
+
+    # Rebuild slices
+    data, slices = InMemoryDataset.collate(data_list)
+    print("slices = ", slices)
+    print("data = ", data)
+    return data, slices
 
 
 class ToUndirected:
@@ -203,16 +260,17 @@ class FNNDataset(InMemoryDataset):
 	@property
 	def processed_file_names(self):
 		if self.pre_filter is None:
+			# TODO: change this back
+			# return f'{self.name[:3]}_data_max2_{self.feature}.pt'
 			return f'{self.name[:3]}_data_{self.feature}.pt'
 		else:
 			return f'{self.name[:3]}_data_{self.feature}_prefiler.pt'
 
 	def download(self):
 		raise NotImplementedError('Must indicate valid location of raw data. No download allowed')
-
+	
 	def process(self):
-
-		self.data, self.slices = read_graph_data(self.raw_dir, self.feature)
+		self.data, self.slices = read_graph_data(self.raw_dir, self.feature, max_distance=2)
 
 		if self.pre_filter is not None:
 			data_list = [self.get(idx) for idx in range(len(self))]
