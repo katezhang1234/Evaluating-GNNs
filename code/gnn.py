@@ -71,22 +71,31 @@ class Model(torch.nn.Module):
 			self.lin1 = torch.nn.Linear(self.nhid * (self.heads + 1), self.nhid)
 
 		self.lin2 = torch.nn.Linear(self.nhid * self.heads, self.num_classes)
+	
 
 	def forward(self, data):
-
 		x, edge_index, batch = data.x, data.edge_index, data.batch
-
 		edge_attr = None
 
 		x = F.relu(self.conv1(x, edge_index, edge_attr))
 		if self.model == 'gin':
-			x = global_add_pool(x, batch)
+			x = gmp(x, batch)
 		else:
-			print("max pool!")
 			x = gmp(x, batch)
 
 		if self.concat:
-			news = torch.stack([data.x[(data.batch == idx).nonzero().squeeze()[0]] for idx in range(data.num_graphs)])
+			news = []
+			for idx in range(data.num_graphs):
+				# Find the indices for the nodes in the current graph
+				indices = (data.batch == idx).nonzero(as_tuple=True)[0]
+				if indices.numel() > 0:  # Check if there are nodes in this graph
+					news.append(data.x[indices[0]])  # Take the first node's features
+				else:
+					# If the graph is empty, append a zero tensor with the same dimension as `x`
+					news.append(torch.zeros(x.size(1), device=x.device))
+			news = torch.stack(news)
+
+			# Apply the linear layer and concatenate the results
 			news = F.relu(self.lin0(news))
 			x = torch.cat([x, news], dim=1)
 			x = F.relu(self.lin1(x))
@@ -94,6 +103,7 @@ class Model(torch.nn.Module):
 		x = F.log_softmax(self.lin2(x), dim=-1)
 
 		return x
+
 
 
 @torch.no_grad()
@@ -127,7 +137,7 @@ parser.add_argument('--device', type=str, default='cpu', help='specify cuda devi
 # hyper-parameters
 parser.add_argument('--dataset', type=str, default='politifact', help='[politifact]')
 parser.add_argument('--batch_size', type=int, default=128, help='batch size')
-parser.add_argument('--lr', type=float, default=0.01, help='learning rate')
+parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
 parser.add_argument('--weight_decay', type=float, default=0.01, help='weight decay')
 parser.add_argument('--nhid', type=int, default=128, help='hidden size')
 parser.add_argument('--dropout_ratio', type=float, default=0.0, help='dropout ratio')
@@ -194,6 +204,7 @@ if __name__ == '__main__':
 	'''
 	model.train()
 	train_accuracies = []
+	train_losses = []
 	for epoch in tqdm(range(args.epochs)):
 		print("Epoch = ", epoch)
 		loss_train = 0.0
@@ -215,6 +226,7 @@ if __name__ == '__main__':
 		acc_train, _, _, _, recall_train, auc_train, _ = eval_deep(out_log, train_loader)
 		[acc_val, _, _, _, recall_val, auc_val, _], loss_val = compute_test(val_loader)
 		train_accuracies.append(acc_train)
+		train_losses.append(loss_val)
 		print(f'loss_train: {loss_train:.4f}, acc_train: {acc_train:.4f},'
 			  f' recall_train: {recall_train:.4f}, auc_train: {auc_train:.4f},'
 			  f' loss_val: {loss_val:.4f}, acc_val: {acc_val:.4f},'
@@ -225,24 +237,5 @@ if __name__ == '__main__':
 		  f'acc: {acc:.4f}, f1_macro: {f1_macro:.4f}, f1_micro: {f1_micro:.4f}, '
 		  f'precision: {precision:.4f}, recall: {recall:.4f}, auc: {auc:.4f}, ap: {ap:.4f}')
 	
-	print("Train accuracies = ", train_accuracies)
-
-
-
-# GATv2
-
-# 70% training, 70 epochs. 
-# NO concat
-# acc: 0.7059, f1_macro: 0.7059, f1_micro: 0.7059, precision: 0.6000, recall: 0.8571, auc: 0.8635, ap: 0.8292
-
-# 20% training, 55 epochs. 
-# NO concat
-# acc: 0.6497, f1_macro: 0.6366, f1_micro: 0.6497, precision: 0.5693, recall: 0.9255, auc: 0.7665, ap: 0.6974
-
-# 70% training, 30 epochs
-# CONCAT
-# acc: 0.9020, f1_macro: 0.9014, f1_micro: 0.9020, precision: 0.8077, recall: 1.0000, auc: 0.9714, ap: 0.9419
-
-# 20% training, 30 epochs
-# CONCAT
-# acc: 0.7345, f1_macro: 0.7311, f1_micro: 0.7345, precision: 0.6440, recall: 0.9255, auc: 0.9048, ap: 0.8878
+	print("\nTrain accuracies = ", train_accuracies)
+	print("\nTrain losses = ", train_losses)
