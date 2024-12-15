@@ -69,7 +69,7 @@ class MLP(nn.Module):
         x = self.linear3(x)
         return x
 
-args = {"batch_size": 128,
+args = {"batch_size": 256,
         "epochs": 30,
         "lr": 0.01,
         "weight_decay": 0.01,
@@ -81,8 +81,10 @@ args = {"batch_size": 128,
 dataset = MyData(feature_file_path,node_graph_file_path,graph_labels_path,node_id_path)
 print(len(dataset))
 
-num_training = int(len(dataset) * 0.2)
-num_val = int(len(dataset) * 0.1)
+TRAIN_SUBSET = 0.7
+VAL_SUBSET = 0.1
+num_training = int(len(dataset) * TRAIN_SUBSET)
+num_val = int(len(dataset) * VAL_SUBSET)
 num_test = len(dataset) - (num_training + num_val)
 print(num_training)
 print(num_val)
@@ -104,6 +106,8 @@ cost = torch.nn.CrossEntropyLoss()
 '''
 Train MLP
 '''
+
+train_accuracies = []
 for epoch in range(args["epochs"]):
     sum_loss = 0
     train_correct = 0
@@ -140,9 +144,12 @@ for epoch in range(args["epochs"]):
     Recall = 1.0 * TP / (TP + FN)
     F1 = (2.0 * Precision * Recall) / (Precision + Recall)
     Accuracy = train_correct / num_training
+    train_accuracies.append(Accuracy)
     print('[%d,%d] loss:%.03f' % (epoch + 1, args["epochs"], sum_loss / len(train_loader)))
     print(f'       acc: {Accuracy:.4f}, f1: {F1:.4f}, '
           f'precision: {Precision:.4f}, recall: {Recall:.4f}')
+
+print("Train_accuracies = ", train_accuracies)
 
 model.eval()
 

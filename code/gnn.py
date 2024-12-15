@@ -8,13 +8,16 @@ warnings.filterwarnings("ignore")
 
 # import os
 # os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+# PYTORCH_ENABLE_MPS_FALLBACK=1
 
 import torch
 import torch.nn.functional as F
-from torch_geometric.nn import global_max_pool as gmp
-from torch_geometric.nn import GCNConv, SAGEConv, GATConv, GATv2Conv, DataParallel
+from torch_geometric.nn import global_max_pool as gmp, global_add_pool
+from torch_geometric.nn import GINConv, GCNConv, SAGEConv, GATConv, GATv2Conv, DataParallel
 from torch.utils.data import random_split
 from torch_geometric.data import DataLoader, DataListLoader
+from torch.nn import BatchNorm1d as BatchNorm
+from torch.nn import Linear, ReLU, Sequential
 
 
 from data_loader import *
@@ -30,8 +33,6 @@ Note: This code refers to UPFD code, the link is https://github.com/safe-graph/G
 Implementation for GNN variants:
 
 GCN, GAT, GATv2, GraphSAGE, and GIN
-
-The GCN, GAT, and GraphSAGE implementation
 
 """
 
@@ -54,8 +55,16 @@ class Model(torch.nn.Module):
 			self.conv1 = SAGEConv(self.num_features, self.nhid)
 		elif self.model == 'gat':
 			self.conv1 = GATConv(self.num_features, self.nhid)
-		elif self.model == "gatv2":
+		elif self.model == 'gatv2':
 			self.conv1 = GATv2Conv(self.num_features, self.nhid, heads = self.heads)
+		elif self.model == 'gin':
+			self.mlp = Sequential(
+				Linear(self.num_features,  self.nhid),
+				BatchNorm(self.nhid),
+				ReLU(),
+				Linear(self.nhid, self.nhid),
+			)
+			self.conv1 = GINConv(self.mlp, train_eps=True)
 
 		if self.concat:
 			self.lin0 = torch.nn.Linear(self.num_features, self.nhid)
@@ -70,7 +79,11 @@ class Model(torch.nn.Module):
 		edge_attr = None
 
 		x = F.relu(self.conv1(x, edge_index, edge_attr))
-		x = gmp(x, batch)
+		if self.model == 'gin':
+			x = global_add_pool(x, batch)
+		else:
+			print("max pool!")
+			x = gmp(x, batch)
 
 		if self.concat:
 			news = torch.stack([data.x[(data.batch == idx).nonzero().squeeze()[0]] for idx in range(data.num_graphs)])
@@ -119,7 +132,7 @@ parser.add_argument('--weight_decay', type=float, default=0.01, help='weight dec
 parser.add_argument('--nhid', type=int, default=128, help='hidden size')
 parser.add_argument('--dropout_ratio', type=float, default=0.0, help='dropout ratio')
 parser.add_argument('--epochs', type=int, default=30, help='maximum number of epochs')
-parser.add_argument('--concat', type=bool, default=False, help='whether concat news embedding and graph embedding')
+parser.add_argument('--concat', type=bool, default=True, help='whether concat news embedding and graph embedding')
 parser.add_argument('--multi_gpu', type=bool, default=False, help='multi-gpu mode')
 parser.add_argument('--feature', type=str, default='spacy', help='feature type, [profile, spacy, bert, content]')
 parser.add_argument('--model', type=str, default='gcn', help='model type, [gcn, gat, sage, gatv2, gin]')
@@ -180,6 +193,7 @@ if __name__ == '__main__':
 	Train the model
 	'''
 	model.train()
+	train_accuracies = []
 	for epoch in tqdm(range(args.epochs)):
 		print("Epoch = ", epoch)
 		loss_train = 0.0
@@ -200,6 +214,7 @@ if __name__ == '__main__':
 			out_log.append([F.softmax(out, dim=1), y])
 		acc_train, _, _, _, recall_train, auc_train, _ = eval_deep(out_log, train_loader)
 		[acc_val, _, _, _, recall_val, auc_val, _], loss_val = compute_test(val_loader)
+		train_accuracies.append(acc_train)
 		print(f'loss_train: {loss_train:.4f}, acc_train: {acc_train:.4f},'
 			  f' recall_train: {recall_train:.4f}, auc_train: {auc_train:.4f},'
 			  f' loss_val: {loss_val:.4f}, acc_val: {acc_val:.4f},'
@@ -209,10 +224,12 @@ if __name__ == '__main__':
 	print(f'{args.dataset} {args.model} Testing Results:\n'
 		  f'acc: {acc:.4f}, f1_macro: {f1_macro:.4f}, f1_micro: {f1_micro:.4f}, '
 		  f'precision: {precision:.4f}, recall: {recall:.4f}, auc: {auc:.4f}, ap: {ap:.4f}')
+	
+	print("Train accuracies = ", train_accuracies)
 
 
-# Make sure to add: PYTORCH_ENABLE_MPS_FALLBACK=1
 
+# GATv2
 
 # 70% training, 70 epochs. 
 # NO concat
