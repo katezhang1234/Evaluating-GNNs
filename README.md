@@ -1,4 +1,4 @@
-# Detecting Fake News Using Deep Neural Networks
+# Detecting Fake News Using Graph Neural Networks
 
 ## Models
 * All code for GNN models is in code/gnn.py, which refers to the UFPD code at https://github.com/safe-graph/GNN-FakeNews.
